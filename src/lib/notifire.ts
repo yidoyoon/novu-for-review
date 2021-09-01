@@ -1,15 +1,23 @@
+import EventEmitter from 'events';
+
+import { EmailHandler } from './handler/email.handler';
+import { SmsHandler } from './handler/sms.handler';
 import { INotifireConfig } from './notifire.interface';
 import { IEmailProvider, ISmsProvider } from './provider/provider.interface';
 import { ProviderStore } from './provider/provider.store';
-import { ITemplate, ITriggerPayload } from './template/template.interface';
+import {
+  ChannelTypeEnum,
+  ITemplate,
+  ITriggerPayload,
+} from './template/template.interface';
 import { TemplateStore } from './template/template.store';
-import { TriggerEngine } from './trigger/trigger.engine';
 
-export class Notifire {
-  private readonly templateStore: TemplateStore;
-  private readonly providerStore: ProviderStore;
+export class Notifire extends EventEmitter {
+  private templateStore: TemplateStore;
+  private providerStore: ProviderStore;
 
   constructor(private config?: INotifireConfig) {
+    super();
     this.templateStore = this.config?.templateStore || new TemplateStore();
     this.providerStore = this.config?.providerStore || new ProviderStore();
   }
@@ -24,16 +32,46 @@ export class Notifire {
     await this.providerStore.addProvider(provider);
   }
 
-  async getProviderById(providerId: string) {
-    return this.providerStore.getProviderById(providerId);
-  }
-
   async trigger(eventId: string, data: ITriggerPayload) {
-    const triggerEngine = new TriggerEngine(
-      this.templateStore,
-      this.providerStore
-    );
+    const template = await this.templateStore.getTemplateById(eventId);
+    if (!template) {
+      throw new Error(
+        `Template on event: ${eventId} was not found in the template store`
+      );
+    }
 
-    return await triggerEngine.trigger(eventId, data);
+    for (const message of template.messages) {
+      const provider = await this.providerStore.getProviderByChannel(
+        message.channel
+      );
+
+      if (!provider) {
+        throw new Error(
+          `Provider for ${message.channel} channel was not found`
+        );
+      }
+
+      this.emit('pre:send', {
+        id: template.id,
+        channel: message.channel,
+        message,
+        trigger: data,
+      });
+
+      if (provider.channelType === ChannelTypeEnum.EMAIL) {
+        const emailHandler = new EmailHandler(message, provider);
+        await emailHandler.send(data);
+      } else if (provider.channelType === ChannelTypeEnum.SMS) {
+        const smsHandler = new SmsHandler(message, provider);
+        await smsHandler.send(data);
+      }
+
+      this.emit('post:send', {
+        id: template.id,
+        channel: message.channel,
+        message,
+        trigger: data,
+      });
+    }
   }
 }
