@@ -1,3 +1,0 @@
-# communicat
-
-Notification Management Framework
